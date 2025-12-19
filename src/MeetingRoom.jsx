@@ -54,7 +54,7 @@ export default function MeetingRoom() {
         if (users && users.length === 1 && users[0].userID === userID) {
           setIsHost(true);
         }
-      },      
+      },
       onAutoPlayFailed: () => {
         console.log("Autoplay failed, attempting to resume...");
         const resume = () => {
