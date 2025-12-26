@@ -81,7 +81,7 @@ export default function MeetingRoom() {
             showTextChat: true,
           },
         },
-        // showPreJoinView: true,
+        showPreJoinView: false,
         turnOnCameraWhenJoining: true,
         turnOnMicrophoneWhenJoining: true,
         // CRITICAL: Handle autoplay failure
@@ -97,6 +97,7 @@ export default function MeetingRoom() {
         },
         onError: (err) => {
           console.error("Zego Error:", err);
+          setLoading(false);
           if (err === 1104030) {
             setError(
               "Permission denied. Please allow camera and microphone access."
