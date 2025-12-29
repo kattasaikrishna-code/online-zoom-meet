@@ -4,33 +4,9 @@ import { v4 as uuidv4 } from "uuid";
 
 const Home = () => {
   const navigate = useNavigate();
-  const [time, setTime] = useState(new Date());
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [joinRoomId, setJoinRoomId] = useState("");
   const [joinName, setJoinName] = useState("");
-
-  useEffect(() => {
-    const timer = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatDate = (date) => {
-    const options = {
-      weekday: "long",
-      month: "long",
-      day: "numeric",
-      year: "numeric",
-    };
-    return date.toLocaleDateString("en-US", options);
-  };
-
-  const formatTime = (date) => {
-    return date.toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true,
-    });
-  };
 
   const handleNewMeeting = () => {
     const roomId = uuidv4();
@@ -144,7 +120,7 @@ const Home = () => {
             <span style={styles.actionLabel}>Share Screen</span>
           </div>
         </div>
-      </div>      
+      </div>
 
       {showJoinModal && (
         <div style={styles.modalOverlay}>

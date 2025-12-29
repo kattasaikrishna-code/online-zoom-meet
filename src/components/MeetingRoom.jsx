@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useMemo } from "react";
 import { useParams, useLocation, useNavigate } from "react-router-dom";
 import { ZegoUIKitPrebuilt } from "@zegocloud/zego-uikit-prebuilt";
+import CountMeter from "./CounterMeter";
 
 export default function MeetingRoom() {
   const { roomId } = useParams();
@@ -9,11 +10,16 @@ export default function MeetingRoom() {
   const containerRef = useRef(null);
   const recorderRef = useRef(null);
   const zpRef = useRef(null);
+  const isInitializing = useRef(false);
+  const isCleaningUp = useRef(false);
+  const isMounted = useRef(true);
+  const currentRequestId = useRef(0);
 
   const [isRecording, setIsRecording] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showAutoplayPrompt, setShowAutoplayPrompt] = useState(false);
+  const [showCountMeter, setShowCountMeter] = useState(false);
 
   const savedData = useMemo(() => {
     try {
@@ -31,17 +37,38 @@ export default function MeetingRoom() {
     location.state?.isHost || savedData?.isHost || false
   );
   console.log("isHost", isHost);
-  const userID = useMemo(() => "ID_" + Math.floor(Math.random() * 10000), []);
+  const userID = useMemo(() => {
+    const savedID = sessionStorage.getItem("zego_user_id");
+    if (savedID) return savedID;
+    const newID = "ID_" + Math.floor(Math.random() * 10000);
+    sessionStorage.setItem("zego_user_id", newID);
+    return newID;
+  }, []);
 
   const appID = 1791600450;
   const serverSecret = "99aa4a826d1bf6b7b57fe87253a22a07";
 
   const initMeeting = async () => {
-    if (!userName || !containerRef.current || zpRef.current) return;
+    if (
+      !userName ||
+      !containerRef.current ||
+      zpRef.current ||
+      isInitializing.current
+    )
+      return;
 
+    const requestId = ++currentRequestId.current;
     try {
+      isInitializing.current = true;
+      if (!isMounted.current || requestId !== currentRequestId.current) return;
       setLoading(true);
       setError(null);
+
+      // Add a small delay to ensure DOM is fully settled
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!isMounted.current || requestId !== currentRequestId.current) return;
+
+      if (!containerRef.current) return;
 
       const kitToken = ZegoUIKitPrebuilt.generateKitTokenForTest(
         appID,
@@ -52,68 +79,124 @@ export default function MeetingRoom() {
       );
 
       const zp = ZegoUIKitPrebuilt.create(kitToken);
+      if (!isMounted.current || requestId !== currentRequestId.current) {
+        try {
+          zp.destroy();
+        } catch (e) {}
+        return;
+      }
       zpRef.current = zp;
 
-      zp.joinRoom({
-        container: containerRef.current,
-        scenario: {
-          mode: ZegoUIKitPrebuilt.GroupCall,
+      try {
+        zp.joinRoom({
+          container: containerRef.current,
+          scenario: {
+            mode: ZegoUIKitPrebuilt.GroupCall,
+            config: {
+              role: isHost
+                ? ZegoUIKitPrebuilt.Host
+                : ZegoUIKitPrebuilt.Participant,
+            },
+          },
+          layout: "Sidebar",
           config: {
-            role: isHost
-              ? ZegoUIKitPrebuilt.Host
-              : ZegoUIKitPrebuilt.Participant,
-          },
-        },
-        layout: "Sidebar",
-        config: {
-          showLayoutButton: false,
-          showPinButton: true,
-          showUserList: true,
-          showRoomDetailsButton: true,
-          showScreenSharingButton: true,
-          showTextChat: true,
-          showMyCameraToggleButton: true,
-          showMyMicrophoneToggleButton: true,
-          showAudioVideoSettingsButton: true,
-          // Media handling
-          lowerLeftNotification: {
-            showUserJoinAndLeave: true,
+            showLayoutButton: false,
+            showPinButton: isHost,
+            showUserList: true,
+            showRemoveUserButton: isHost,
+            showRoomDetailsButton: true,
+            showScreenSharingButton: true,
             showTextChat: true,
+            showMyCameraToggleButton: true,
+            showMyMicrophoneToggleButton: true,
+            showAudioVideoSettingsButton: true,
+            // Media handling
+            lowerLeftNotification: {
+              showUserJoinAndLeave: true,
+              showTextChat: true,
+            },
           },
-        },
-        showPreJoinView: false,
-        turnOnCameraWhenJoining: true,
-        turnOnMicrophoneWhenJoining: true,
-        // CRITICAL: Handle autoplay failure
-        onAutoPlayFailed: (error) => {
-          console.warn("Autoplay failed:", error);
-          setShowAutoplayPrompt(true);
-        },
-        onJoinRoom: () => {
-          setLoading(false);
-        },
-        onLeaveRoom: () => {
-          navigate("/");
-        },
-        onError: (err) => {
-          console.error("Zego Error:", err);
-          setLoading(false);
-          if (err === 1104030) {
-            setError(
-              "Permission denied. Please allow camera and microphone access."
-            );
-          }
-        },
-      });
+          showPreJoinView: false,
+          turnOnCameraWhenJoining: true,
+          turnOnMicrophoneWhenJoining: true,
+          // CRITICAL: Handle autoplay failure
+          onAutoPlayFailed: (error) => {
+            console.warn("Autoplay failed:", error);
+            setShowAutoplayPrompt(true);
+          },
+          onJoinRoom: () => {
+            setLoading(false);
+          },
+          onLeaveRoom: async () => {
+            await cleanUpZego();
+            if (isMounted.current) {
+              navigate("/");
+            }
+          },
+          onError: (err) => {
+            console.error("Zego Error:", err);
+            setLoading(false);
+            if (err === 1104030) {
+              setError(
+                "Permission denied. Please allow camera and microphone access."
+              );
+            } else if (err === 1004020) {
+              console.warn(
+                "Stream interrupted. Zego will retry automatically."
+              );
+            }
+          },
+        });
+      } catch (joinErr) {
+        console.error("Zego joinRoom critical error:", joinErr);
+        // If it's the tracer null error, we might just want to ignore it if zp exists
+        if (joinErr?.message?.includes("tracer")) {
+          console.warn("Dampened tracer error during joinRoom");
+        } else {
+          throw joinErr;
+        }
+      }
     } catch (err) {
       console.error("Meeting setup error:", err);
       setError("Failed to initialize meeting room. Please try again.");
       setLoading(false);
+    } finally {
+      if (requestId === currentRequestId.current) {
+        isInitializing.current = false;
+      }
+    }
+  };
+
+  const cleanUpZego = async () => {
+    if (isCleaningUp.current) return;
+    try {
+      isCleaningUp.current = true;
+      // Also stop any ongoing initialization attempt
+      currentRequestId.current++;
+      isInitializing.current = false;
+
+      if (!zpRef.current) return;
+
+      console.log("Safe Zego cleanup initiated...");
+      // Wrap in try-catch to ignore Zego DOM removal errors if React beat us to it
+      try {
+        await zpRef.current.destroy();
+      } catch (e) {
+        console.warn("Zego destroy warning (usually safe to ignore):", e);
+      }
+      zpRef.current = null;
+    } finally {
+      isCleaningUp.current = false;
     }
   };
 
   useEffect(() => {
+    isMounted.current = true;
     initMeeting();
+    return () => {
+      isMounted.current = false;
+      cleanUpZego();
+    };
   }, [userName, roomId]);
 
   const handleResumeMedia = () => {
@@ -137,19 +220,30 @@ export default function MeetingRoom() {
         video: { frameRate: 30 },
         audio: true,
       });
+
+      // Find supported MP4 type, fallback to webm
+      const types = [
+        "video/mp4;codecs=h264",
+        "video/mp4",
+        "video/webm;codecs=h264",
+        "video/webm",
+      ];
+      const supportedType = types.find((t) => MediaRecorder.isTypeSupported(t));
+
       recorderRef.current = new MediaRecorder(stream, {
-        mimeType: "video/webm",
+        mimeType: supportedType,
       });
 
       const chunks = [];
       recorderRef.current.ondataavailable = (e) => chunks.push(e.data);
 
       recorderRef.current.onstop = () => {
-        const blob = new Blob(chunks, { type: "video/webm" });
+        const extension = supportedType.includes("mp4") ? "mp4" : "webm";
+        const blob = new Blob(chunks, { type: supportedType });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `meeting_recording_${Date.now()}.webm`;
+        a.download = `meeting_recording_${Date.now()}.${extension}`;
         a.click();
       };
 
@@ -408,22 +502,39 @@ export default function MeetingRoom() {
         </div>
 
         <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-          <button onClick={copyMeetingLink} style={actionButtonStyle}>
-            🔗 Link
+          {isHost && (
+            <button onClick={copyMeetingLink} style={actionButtonStyle}>
+              🔗 Link
+            </button>
+          )}
+
+          <button
+            onClick={() => setShowCountMeter(!showCountMeter)}
+            style={{
+              ...actionButtonStyle,
+              background: "#29465B",
+            }}
+          >
+            Count Meter
           </button>
 
           <button
             onClick={!isRecording ? startRecording : stopRecording}
             style={{
               ...actionButtonStyle,
-              background: isRecording ? "#FF3B30" : "#3A3A3C",
+              background: "#3A3A3C",
             }}
           >
-            {isRecording ? "⏹" : "⏺"} Record
+            Record
           </button>
 
           <button
-            onClick={() => window.confirm("Leave?") && navigate("/")}
+            onClick={async () => {
+              if (window.confirm("Leave?")) {
+                await cleanUpZego();
+                navigate("/");
+              }
+            }}
             style={{
               ...actionButtonStyle,
               background: "#FF3B30",
@@ -451,11 +562,20 @@ export default function MeetingRoom() {
         )}
       </div>
 
-      {/* 🔵 VIDEO CALL AREA */}
-      <div
-        style={{ position: "relative", background: "#000", overflow: "hidden" }}
-      >
-        <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {/* 🔵 MAIN AREA (VIDEO + SIDEBAR) */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* 🔵 VIDEO CALL AREA */}
+        <div
+          style={{
+            position: "relative",
+            background: "#000",
+            overflow: "hidden",
+            flex: 1,
+          }}
+        >
+          <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+        </div>
+        {showCountMeter && <CountMeter setShowCountMeter={setShowCountMeter} />}
       </div>
     </div>
   );
